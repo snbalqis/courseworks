@@ -598,5 +598,3 @@ Disconnect from DBI SQLite.
 ```{r}
 dbDisconnect(conn)
 ```
-
-
