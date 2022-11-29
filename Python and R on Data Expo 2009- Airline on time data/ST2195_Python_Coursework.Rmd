@@ -23,7 +23,7 @@ library(dplyr)
 library(ggplot2)
 
 # set the working directory that contains the files
-setwd("D:/SIM-UOL/YEAR 3/ST2195 Programming for Data Science/Coursework/SITINURBALQIS/dataversefiles")
+setwd("")
 
 # combine files from 2003-2004 into a vector
 myfiles = c("2003.csv", "2004.csv")
