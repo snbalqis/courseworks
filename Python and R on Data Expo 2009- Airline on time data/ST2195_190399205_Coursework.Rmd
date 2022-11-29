@@ -1,0 +1,602 @@
+---
+title: "ST2195 Coursework, R"
+author: 'Student Number: 190399205'
+date: "2/22/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# ST2195 Programming for Data Science Coursework
+
+
+## Importing and loading data.
+
+To start off, we load the following packages which are required to answer the questions. Then, we set the working directory that contains the required files.
+We combine the .csv files from 2003-2004 into a vector and read the files into a data frame. Files for airports, carriers and plane-data are also read into data frames.
+
+```{r packages and setwd}
+library(DBI)
+library(dplyr)
+library(ggplot2)
+
+# set the working directory that contains the files
+setwd("D:/SIM-UOL/YEAR 3/ST2195 Programming for Data Science/Coursework/SITINURBALQIS/dataversefiles")
+
+# combine files from 2003-2004 into a vector
+myfiles = c("2003.csv", "2004.csv")
+
+# read the files into dataframe
+ontime = lapply(myfiles, read.csv, header = TRUE)
+
+# read files into dataframe
+airports <- read.csv("airports.csv", header = TRUE)
+carriers <- read.csv("carriers.csv", header = TRUE)
+planes <- read.csv("plane-data.csv", header = TRUE)
+
+```
+
+## Creating the database.
+
+We create a database, connect it to DBI Browser (SQLite) using DBI, and write the data frames to the database. Afterwards, we partly clean the main table and create copies of it to be used in Q3, Q4, and Q5.
+
+```{r database conn}
+# ------- create the database -------
+if (file.exists("airline.db")) 
+  file.remove("airline.db")
+conn <- dbConnect(RSQLite::SQLite(), "airline.db")
+
+# ------- write to the database -------
+# load in data from csv files
+dbWriteTable(conn, "airports", airports, append = TRUE)
+dbWriteTable(conn, "carriers", carriers, append = TRUE)
+dbWriteTable(conn, "planes", planes, append = TRUE)
+
+# for loop to load 2003 and 2004 files into database
+for(k in 1:length(ontime)) {
+  dbWriteTable(conn, "yearsdf", ontime[[k]], append = TRUE)
+}
+
+# Clean data in main table where variables will likely be used for all for questions
+dbExecute(conn, 
+          "DELETE FROM yearsdf
+           WHERE ArrDelay IS NULL OR trim(ArrDelay) = ''
+           AND DepDelay IS NULL OR trim(DepDelay) = ''")
+
+# create separate tables for Q3, Q4, Q5
+dbExecute(conn,
+          "CREATE TABLE IF NOT EXISTS yearsdf3
+           AS SELECT * FROM yearsdf")
+
+dbExecute(conn,
+          "CREATE TABLE IF NOT EXISTS yearsdf4
+           AS SELECT * FROM yearsdf")
+
+dbExecute(conn,
+          "CREATE TABLE IF NOT EXISTS Q5flights
+           AS SELECT * FROM yearsdf")
+
+```
+
+## Queries via DBI:
+
+### Question 1
+
+Here, we further clean the data by omitting rows with Cancelled or Diverted flights.
+
+```{r cleaning for Q1}
+dbExecute(conn,
+           "DELETE FROM yearsdf
+            WHERE Cancelled = 1 OR Diverted = 1")
+
+```
+
+### The following is how we approach the Question: When is the best time of day to fly to minimise delays?
+
+We select the variables Year, Month, DayofMonth, DayofWeek, DepTime, ArrDelay and DepDelay from main table yearsdf and return a query as Q1flights data frame.
+
+We also check for any NAs in ArrDelay as we will be using ArrDelay as the assumed delays mentioned.
+
+```{r Q1.1.1}
+Q1flights <- dbGetQuery(conn,
+                        "SELECT Year, Month, DayofMonth, DayofWeek,
+                         DepTime,
+                         ArrDelay, DepDelay
+                         FROM yearsdf")
+
+summary(Q1flights$ArrDelay)
+
+```
+
+Next, we convert the variable DepTime's data type from integer to datetime based on this code: https://stackoverflow.com/questions/21003657/converting-numbers-to-time
+
+Afterwards, we create a new column 'Time_of_Day' that stores the categorised timing intervals of DepTime according to Morning, Afternoon, Evening, and Night.
+
+```{r Q1.1.2}
+
+Q1flights$DepTime <- substr(as.POSIXct(sprintf("%04.0f", Q1flights$DepTime), format='%H%M'), 12, 16)
+
+Q1flights <- Q1flights %>%
+  mutate(Time_of_Day = case_when(DepTime >= "05:00" & DepTime <= "11:59"   ~ "Morning",
+                                 DepTime >= "12:00" & DepTime <= "16:59"   ~ "Afternoon",
+                                 DepTime >= "17:00" & DepTime <= "20:59"   ~ "Evening",
+                                 TRUE ~ "Night"))
+
+```
+
+Q1flights data frame is written to the data base.
+
+We query the variables Time_of_Day and the averaged ArrDelay from Q1flights table into timeofday data frame.
+
+Then, we change variable Time_of_Day's data type to ordered factors and round variable Mean_ArrDelay's data to 3 decimal places.
+
+Finally, we plot a bar chart for the 'Average Arrival Flight Delay per Time of Day' using the ggplot function and print the output that has the lowest mean.
+
+```{r Q1.1.3}
+
+dbWriteTable(conn, "Q1flights", Q1flights, append = TRUE)
+
+timeofday <- dbGetQuery(conn,
+                        "SELECT Time_of_Day,
+                         AVG(ArrDelay) AS Mean_ArrDelay
+                         FROM Q1flights
+                         GROUP BY Time_of_Day
+                         ORDER BY Mean_ArrDelay")
+
+timeofday$Time_of_Day <- ordered(timeofday$Time_of_Day,
+                                 levels = c("Morning",
+                                            "Afternoon",
+                                            "Evening",
+                                            "Night"))
+
+timeofday$Mean_ArrDelay <- round(timeofday$Mean_ArrDelay, 3)
+
+# Plot bar chart
+graph1.1 <- ggplot(data = timeofday, aes(x=Time_of_Day, y=Mean_ArrDelay, fill=Mean_ArrDelay))
+graph1.1 <- graph1.1 + geom_bar(stat="identity") + theme_minimal() + labs(title = "2003-2004 Average Arrival Flight Delay/nPer Time of Day", x="Time of Day", y="Average Arrival Delay")
+graph1.1 <- graph1.1 + geom_text(aes(label = Mean_ArrDelay), vjust = -0.2)
+
+# Print bar chart
+print(graph1.1)
+
+# Print Time of Day that has lowest mean
+print(paste(timeofday[which.min(timeofday[,2]),1], "is the best time of day to fly to minimise delays."))
+
+```
+
+
+### The following is how we approach the Question: When is the best day of week to fly to minimise delays?
+
+We query the variables DayOfWeek and the averaged ArrDelay from main table yearsdf into Q1.2 data frame and replace the numeric values of the day of the week to their weekday name.
+
+Then, we change variable DayOfWeek's data type to ordered factors and round variable Mean_ArrDelay's data to 3 decimal places.
+
+Finally, we plot a bar chart for the 'Average Arrival Flight Delay per Day of Week' using the ggplot function and print the output that has the lowest mean.
+
+```{r Q1.2}
+Q1.2 <- dbGetQuery(conn,
+                 "SELECT DayOfWeek,
+                  AVG(ArrDelay) AS Mean_ArrDelay
+                  FROM yearsdf
+                  GROUP BY DayOfWeek
+                  ORDER BY DayOfWeek")
+
+Q1.2 <- Q1.2 %>% mutate(DayOfWeek=recode(DayOfWeek, '1' = "Monday",
+                                                    '2' = "Tuesday",
+                                                    '3' = "Wednesday",
+                                                    '4' = "Thursday",
+                                                    '5' = "Friday",
+                                                    '6' = "Saturday",
+                                                    '7' = "Sunday"))
+
+Q1.2$DayOfWeek <- ordered(Q1.2$DayOfWeek, levels=c("Monday", "Tuesday",
+                                                   "Wednesday",
+                                                   "Thursday", 
+                                                   "Friday", 
+                                                   "Saturday", 
+                                                   "Sunday"))
+Q1.2$Mean_ArrDelay <- round(Q1.2$Mean_ArrDelay, 3)
+
+# Plot bar chart with data frame Q1.2
+graph1.2 <- ggplot(data = Q1.2, aes(x=DayOfWeek, y=Mean_ArrDelay, fill=Mean_ArrDelay))
+graph1.2 <- graph1.2 + geom_bar(stat="identity") + theme_minimal() + labs(title = "2003-2004 Average Arrival Flight Delay/nPer Day", x="Day of Week", y="Average Arrival Delay")
+graph1.2 <- graph1.2 + geom_text(aes(label = Mean_ArrDelay), vjust = -0.2)
+# Print bar chart
+print(graph1.2)
+
+# Print Day of Week that has lowest mean
+print(paste(Q1.2[which.min(Q1.2[,2]),1], "is the best day of the week to fly to minimise delays."))
+
+```
+
+### The following is how we approach the Question: When is the best time of year to fly to minimise delays?
+
+We query the variables Month and the averaged ArrDelay from main table yearsdf into Q1.3 data frame and replace the numeric values of the months to month name.
+
+Then, we change variable Month's data type to ordered factors and round variable Mean_ArrDelay's data to 3 decimal places.
+
+Finally, we plot a bar chart for the 'Average Arrival Flight Delay per Month' using the ggplot function and print the output that has the lowest mean.
+
+
+```{r Q1.3, fig.width = 9}
+
+Q1.3 <- dbGetQuery(conn,
+                   "SELECT Month,
+                    AVG(ArrDelay) AS Mean_ArrDelay
+                    FROM yearsdf
+                    GROUP BY Month
+                    ORDER BY Mean_ArrDelay")
+
+Q1.3 <- Q1.3 %>% mutate(Month=recode(Month, '1' = "January",
+                                            '2' = "February",
+                                            '3' = "March",
+                                            '4' = "April",
+                                            '5' = "May",
+                                            '6' = "June",
+                                            '7' = "July",
+                                            '8' = "August",
+                                            '9' = "September",
+                                            '10' = "October",
+                                            '11' = "November",
+                                            '12' = "December"))
+
+# Change Month column to ordered factors accordingly
+Q1.3$Month <- ordered(Q1.3$Month, levels=c("January", "February",
+                                           "March", "April",
+                                           "May", "June",
+                                           "July", "August",
+                                           "September", "October",
+                                           "November", "December"))
+
+Q1.3$Mean_ArrDelay <- round(Q1.3$Mean_ArrDelay, 3)
+
+
+# Create bar chart from data Q1.3
+graph1.3 <- ggplot(data = Q1.3, aes(x=Month, y=Mean_ArrDelay, fill=Mean_ArrDelay))
+graph1.3 <- graph1.3 + geom_bar(stat="identity") + theme_minimal() + labs(title = "2003-2004 Average Arrival Flight Delay/nPer Month", x="Month", y="Average Arrival Delay")
+graph1.3 <- graph1.3 + geom_text(aes(label = Mean_ArrDelay), vjust = -0.2)
+# Print bar chart
+print(graph1.3)
+
+# Print Month that has lowest mean
+print(paste(Q1.3[which.min(Q1.3[,2]),1], "is the best time of year to fly to minimise delays."))
+
+```
+
+### Question 2
+
+### The following is how we approach the question: Do older planes suffer more delays?
+
+We merge the years of flights, which is the yearsdf table, and the planes tables using inner join with variable TailNum as the matching value and query into planes_age data frame.
+
+We write this data frame into the data base to create a table planes_age.
+
+
+```{r Q2}
+
+planes_age <- dbGetQuery(conn,
+                         "SELECT yearsdf.Year AS flight_year,
+                          yearsdf.ArrDelay, planes.year AS plane_year,
+                          yearsdf.TailNum
+                          FROM yearsdf
+                          INNER JOIN planes ON yearsdf.TailNum = planes.tailnum")
+
+
+dbWriteTable(conn, "planes_age", planes_age, append = TRUE)
+
+```
+
+
+Next, we would like to see the unique plane years and check if there are any odd values. The maximum year should be 2004.
+
+
+```{r Q2 distinct plane_year}
+
+dbGetQuery(conn, 
+           "SELECT DISTINCT plane_year
+            FROM planes_age
+            ORDER BY plane_year")
+
+```
+
+We can observe that there are a few odd years: empty cells, 0000, None, 2007.
+
+Therefore, we shall clean the planes_age table by removing the odd years. The following codes are adapted from: https://stackoverflow.com/questions/16587761/sqlite-how-to-delete-rows-that-contain-null-empty-strings 
+
+```{r}
+
+dbExecute(conn,
+          "DELETE FROM planes_age
+           WHERE plane_year IS NULL OR trim(plane_year) = ''")
+dbExecute(conn,
+          "DELETE FROM planes_age
+           WHERE plane_year LIKE '%None%' ")
+dbExecute(conn,
+          "DELETE FROM planes_age
+           WHERE plane_year LIKE '%0000%' ")
+dbExecute(conn,
+          "DELETE FROM planes_age
+           WHERE plane_year LIKE '%2007%' ")
+
+```
+
+After cleaning the data, we overwrite the planes_age data frame by querying all data from the planes_age table, and convert the variable plane_year data type to integer class.
+
+We create a new column 'age' which represents the age of plane that stores data after subtracting plane_year from flight_year. The code is adapted from: https://stackoverflow.com/questions/18999710/creating-a-new-column-to-a-data-frame-using-a-formula-from-another-variable/19000310
+
+```{r}
+
+planes_age <- dbGetQuery(conn,
+                         "SELECT *
+                          FROM planes_age")
+
+planes_age$plane_year <- as.integer(planes_age$plane_year)
+
+planes_age$age <- with(planes_age, flight_year - plane_year)
+
+
+```
+
+Next, we write the data frame planes_age to the data base to create a table called planes_agegroup.
+
+We query the variables age, where age is capped at 25, and the averaged ArrDelay from table planes_agegroup and overwrite the initial planes_age data frame.
+
+We round variable mean_ArrDelay's data to 3 decimal places and create a scatter plot for the 'Average Arrival Flight Delay by Age Groups of Planes' using the ggplot function.
+
+```{r}
+
+dbWriteTable(conn, "planes_agegroup", planes_age, append = TRUE)
+
+planes_age <- dbGetQuery(conn,
+                              "SELECT age, avg(ArrDelay) AS 
+                               mean_ArrDelay
+                               FROM planes_agegroup 
+                               WHERE age <= 25 
+                               GROUP BY age")
+
+planes_age$mean_ArrDelay <- round(planes_age$mean_ArrDelay, 3)
+
+# Create scatter plot with data frame planes_age
+Q2 <- ggplot(data = planes_age, aes(x=age, y=mean_ArrDelay))
+Q2 <- Q2 + geom_point(aes(color = mean_ArrDelay)) + geom_smooth(method = "lm", se = FALSE) + labs(title = "2003-2004 Average Arrival Flight Delay/nBy Age Groups of Planes", x="Age of Planes", y="Average Arrival Delay")
+Q2 <- Q2 + geom_text(aes(label = mean_ArrDelay), vjust = -0.2)
+# Print scatter plot
+print(Q2)
+
+```
+
+
+### Question 3
+
+### The following is how we approach the question: How does the number of people flying between different locations change over time?
+
+First, we remove all cancelled flights from table yearsdf3.
+
+```{r Q3: number of people flying between different locations change over time}
+
+# Remove cancelled flights from copied main table
+dbExecute(conn,
+          "DELETE FROM yearsdf3
+           WHERE Cancelled = 1")
+
+```
+
+Next, we find which Origin has the highest number of flights by selecting the total count of FlightNum and Origin from table yearsdf3 and query it into Flights_GroupByOrigin data frame.
+
+```{r Q3: find origin with highest no. of flights}
+
+Flights_GroupByOrigin <- dbGetQuery(conn,
+           "SELECT count(FlightNum) AS TotalFlights, Origin
+            FROM yearsdf3
+            GROUP BY Origin
+            ORDER BY TotalFlights")
+
+```
+
+We find out that for Origin, ATL has the highest number of flights, with 773,319 flights in total.
+
+Then, we retrieve all Destinations whose Origin is ATL by selecting the variables Dest, Month, and total count of FlightNum from table yearsdf3 where Origin is ATL and return a query as Flights_DestfromATL data frame.
+
+We write the Flights_DestfromATL data frame into the data base to create table Flights_DestfromATL.
+
+We replace the numeric values of the months to month name and change variable Month's data type to ordered factors.
+
+
+```{r}
+
+Flights_DestfromATL <- dbGetQuery(conn,
+                         "SELECT count(FlightNum) AS TotalFlights,
+                          Dest, Month
+                          FROM yearsdf3
+                          WHERE Origin = 'ATL'
+                          GROUP BY Dest, Month")
+
+dbWriteTable(conn, "Flights_DestfromATL", Flights_DestfromATL, overwrite = TRUE)
+
+Flights_DestfromATL <- Flights_DestfromATL %>% mutate(Month=recode(Month, 
+                                     '1' = "January",
+                                     '2' = "February",
+                                     '3' = "March",
+                                     '4' = "April",
+                                     '5' = "May",
+                                     '6' = "June",
+                                     '7' = "July",
+                                     '8' = "August",
+                                     '9' = "September",
+                                     '10' = "October",
+                                     '11' = "November",
+                                     '12' = "December"))
+
+Flights_DestfromATL$Month <- ordered(Flights_DestfromATL$Month, levels=c("January", "February", "March", "April", "May", "June", 
+         "July", "August", "September", "October", "November",
+         "December"))
+
+```
+
+We show the output of the variables Dest and the sum of TotalFlights from the Flights_DestfromATL table to find the top 5 destinations with highest number of flights.
+
+```{r}
+
+dbGetQuery(conn,
+           "SELECT sum(totalflights) AS TotalFlights, Dest
+            FROM Flights_DestfromATL
+            GROUP BY Dest
+            ORDER BY TotalFlights")
+```
+
+Here, we can see that the those top 5 destinations are: DFW, LGA, ORD, EWR, and MCO.
+
+Hence, we input these values into vector 'dests' to retrieve data from Flights_DestfromATL table where Dest = DFW, LGA, ORD, EWR, or MCO into data frame Q3.
+
+Finally, we plot a line graph for the 'Total Number of Flights from ATL per Month, by Destination' using the ggplot function.
+
+```{r}
+
+dests <- c("DFW", "LGA", "ORD", "EWR", "MCO")
+
+Q3 <- filter(Flights_DestfromATL, Dest %in% dests)
+
+# Plot line graph
+linegraph <- ggplot(Q3, aes(x = Month, y = TotalFlights, group = Dest)) + geom_line(aes(color = Dest)) + geom_point(aes(color = Dest)) + theme_classic() + labs(title = "2003-2004 Total Number of Flights from ATL/nPer Month, by Destination", x="Month", y="Number of Flights")
+
+# Print line graph                   
+print(linegraph)
+
+```
+
+
+### Question 4
+
+### The following is how we approach the question: Can you detect cascading failures as delays in one airport create delays in others?
+
+First, we remove all cancelled flights from table yearsdf4.
+
+```{r Q4: detect cascading failures}
+
+dbExecute(conn,
+          "DELETE FROM yearsdf4
+           WHERE Cancelled = 1")
+
+```
+
+Next, we select the variables Year, Month, DayofMonth, DepTime, CrsDepTime, ArrTime, CrsArrTime, FlightNum, TailNum, ArrDelay, DepDelay, Origin, Dest and LateAircraftDelay from yearsdf4 table on the condition that ArrDelay and LateAircraftDelay are greater than 0, and return the query into data frame 'delays'.
+
+We filter the delays data frame by only including data where DepDelay is greater than 0 into a new data frame 'latedep'.
+
+Then, we check which Destination has the highest number of flights.
+
+```{r}
+
+delays <- dbGetQuery(conn,
+                 "SELECT Year, Month, DayofMonth, DepTime,
+                  CRSDepTime, ArrTime, CRSArrtime, FlightNum, TailNum,
+                  ArrDelay, DepDelay, Origin, Dest, LateAircraftDelay
+                  FROM yearsdf4
+                  WHERE ArrDelay > 0 AND LateAircraftDelay > 0")
+
+latedep <- delays %>% filter(DepDelay > 0)
+
+# Check which Destination has the highest number of flights
+latedep %>% count(Dest, sort = TRUE)
+
+```
+
+According to the output, ORD has the highest number of flights.
+
+With this information, we create two new data frames, 'cascadingDest' and 'cascadingOri', which will include data from latedep data frame where Dest and Origin variables are 'ORD' respectively. 
+
+Using full join, we merge the two data frames together into data frame 'cascadingDelay'.
+
+cascadingDelay data frame is overwritten by filtering and retrieving data where year is 2003, month is 12 and day of month is 12.
+
+```{r}
+
+cascadingDest <- latedep %>% filter(Dest == "ORD")
+cascadingOri <- latedep %>% filter(Origin == "ORD")
+
+cascadingDelay <- cascadingDest %>% full_join(cascadingOri)
+
+# arrange accordingly
+cascadingDelay <- arrange(cascadingDelay, Year, Month, DayofMonth, TailNum)
+
+cascadingDelay <- cascadingDelay %>% filter(Year == 2003, Month == 6, DayofMonth == 12)
+
+```
+
+
+### Question 5
+
+### The following is how we approach the question: Use the available variables to construct a model that predicts delays.
+
+We select the variables ArrDelay, DepDelay, CarrierDelay, WeatherDelay, NASDelay, SecurityDelay and LateAircraftDelay from Q5flights table on the condition that flights are not cancelled nor diverted, and return the query into data frame 'Q5flights'.
+
+Then, we conduct a Simple Linear Regression based on: https://bookdown.org/fjmcgrade/ismaykim/6-regression.html
+
+```{r Q5: model prediction}
+library(caTools) # for sample.split function
+library(broom) # tidy function
+library(knitr) # kable function
+
+Q5flights <- dbGetQuery(conn,
+                        "SELECT ArrDelay, DepDelay, CarrierDelay,
+                         WeatherDelay, NASDelay, SecurityDelay,
+                         LateAircraftDelay
+                         FROM Q5flights
+                         WHERE CANCELLED = 0 AND DIVERTED = 0")
+
+```
+
+First, we set seed to ensure that we get the same results for randomisation.
+
+Next, filter out and remove rows in Q5flights data frame where CarrierDelay, WeatherDelay, NASDelay, SecurityDelay and LateAircraftDelay are NA.
+
+Then, we sample 50 rows from Q5flights without replacement.
+
+Afterwards, we fit a linear regression model where X is DepDelay and Y is ArrDelay from Q1flights, into Q5lm.
+
+Using ggplot, we plot a scatter plot with linear smooth line to visualise our simple linear regression.
+
+```{r}
+
+set.seed(3)
+
+Q5flights <- Q5flights %>% 
+             filter(!is.na(CarrierDelay) & !is.na(WeatherDelay)
+                    & !is.na(NASDelay) & !is.na(SecurityDelay) 
+                    & !is.na(LateAircraftDelay)) %>%
+             sample_n(50)
+
+Q5lm <- lm(ArrDelay ~ DepDelay, data = Q5flights)
+
+# Plot scatter plot with linear smooth line
+lmplot <- ggplot(data = Q5flights, mapping = aes(x = DepDelay, y = ArrDelay)) + 
+          geom_point() + geom_smooth(method = "lm", se = TRUE, color = "red") +
+          labs(x="Departure Delay", y = "Arrival Delay", title= "Simple Linear Regression")
+
+# Print plot
+print(lmplot)
+
+# Produce result summaries of Q5lm
+summary(Q5lm)
+
+```
+
+The summary tells us that our Rsquared: 0.6883 and Adjusted R-squared: 0.6818.
+
+A regression output table is created to present the b0 and b1 coefficients using the tidy() function.
+
+```{r}
+
+tidy(Q5lm) %>% kable()
+
+```
+
+
+Disconnect from DBI SQLite.
+```{r}
+dbDisconnect(conn)
+```
+
+
