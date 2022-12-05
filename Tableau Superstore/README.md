@@ -1,2 +1,2 @@
-The aim of this coursework was to create a story (a collection of dashboards) to discover commercial insights from a provided dataset.
+The aim of this coursework was to create a story (a collection of dashboards) to discover commercial insights from a provided dataset, as well as to explore the dataset using Tableau’s data visualisation tools in an effort to extract commercially-important insights in preparation for a presentation of your findings to senior management of the company.
 This coursework was for the module 'ST2187 Business analytics, applied modelling and prediction'.
